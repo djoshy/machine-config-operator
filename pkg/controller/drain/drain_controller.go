@@ -129,8 +129,8 @@ func New(
 	}
 
 	nodeInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    ctrl.handleNodeEvent,
-		UpdateFunc: func(oldObj, newObj interface{}) { ctrl.handleNodeEvent(newObj) },
+		AddFunc:    func(newObj interface{}) { ctrl.handleNodeEvent(nil, newObj) },
+		UpdateFunc: func(oldObj, newObj interface{}) { ctrl.handleNodeEvent(oldObj, newObj) },
 	})
 
 	ctrl.syncHandler = ctrl.syncNode
@@ -182,10 +182,37 @@ func (ctrl *Controller) logNode(node *corev1.Node, format string, args ...interf
 	klog.Infof("node %s: %s", node.Name, msg)
 }
 
-func (ctrl *Controller) handleNodeEvent(node interface{}) {
-	n := node.(*corev1.Node)
-	klog.V(4).Infof("Updating Node %s", n.Name)
-	ctrl.enqueueNode(n)
+func (ctrl *Controller) handleNodeEvent(oldObj, newObj interface{}) {
+
+	var oldNode, newNode *corev1.Node
+
+	newNode = newObj.(*corev1.Node)
+	klog.V(4).Infof("Updating Node %s", newNode.Name)
+
+	if oldObj != nil {
+		oldNode = oldObj.(*corev1.Node)
+	} else {
+		ctrl.enqueueNode(newNode)
+		return
+	}
+
+	// If keys can't be found on the old nodes, enqueue the node regardless of the annotation values
+	oldDesiredState, ok := oldNode.Annotations[daemonconsts.DesiredDrainerAnnotationKey]
+	if !ok {
+		ctrl.enqueueNode(newNode)
+		return
+	}
+	oldLastAppliedKey, ok := oldNode.Annotations[daemonconsts.LastAppliedDrainerAnnotationKey]
+	if !ok {
+		ctrl.enqueueNode(newNode)
+		return
+	}
+
+	// If the values from both keys are identical between oldNode and newNode, no new action is required by the drain controller
+	if oldDesiredState == newNode.Annotations[daemonconsts.DesiredDrainerAnnotationKey] && oldLastAppliedKey == newNode.Annotations[daemonconsts.LastAppliedDrainerAnnotationKey] {
+		return
+	}
+	ctrl.enqueueNode(newNode)
 }
 
 func (ctrl *Controller) enqueue(node *corev1.Node) {
