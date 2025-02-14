@@ -1732,7 +1732,7 @@ func (dn *Daemon) generateExtensionsArgs(oldConfig, newConfig *mcfgv1.MachineCon
 
 	extArgs := []string{"update"}
 
-	if dn.os.IsEL() {
+	if dn.os.IsCoreOSVariant() {
 		extensions := ctrlcommon.SupportedExtensions()
 		for _, ext := range added {
 			for _, pkg := range extensions[ext] {
@@ -1784,7 +1784,7 @@ func (dn *CoreOSDaemon) applyExtensions(oldConfig, newConfig *mcfgv1.MachineConf
 // Right now it supports default (traditional), realtime kernel and 64k pages kernel
 func (dn *CoreOSDaemon) switchKernel(oldConfig, newConfig *mcfgv1.MachineConfig) error {
 	// We support Kernel update only on RHCOS and SCOS nodes
-	if !dn.os.IsEL() {
+	if !dn.os.IsCoreOSVariant() {
 		klog.Info("updating kernel on non-RHCOS nodes is not supported")
 		return nil
 	}

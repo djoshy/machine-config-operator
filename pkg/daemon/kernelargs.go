@@ -35,7 +35,7 @@ func isArgTunable(arg string) (bool, error) {
 		return false, fmt.Errorf("failed to get OS for determining whether kernel arg is tuneable: %w", err)
 	}
 
-	if os.IsEL() {
+	if os.IsCoreOSVariant() {
 		return tuneableRHCOSArgsAllowlist[arg], nil
 	} else if os.IsFCOS() {
 		return true, nil
