@@ -1,7 +1,9 @@
 package machineset
 
 import (
+	"context"
 	"fmt"
+	"strings"
 
 	"github.com/coreos/stream-metadata-go/stream"
 	corev1 "k8s.io/api/core/v1"
@@ -65,11 +67,6 @@ func reconcileGCP(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 		return false, nil, err
 	}
 
-	// Ensure the ignition stub is the minimum acceptable spec required for boot image updates
-	if err := upgradeStubIgnitionIfRequired(providerSpec.UserDataSecret.Name, secretClient); err != nil {
-		return false, nil, err
-	}
-
 	// Next, unmarshal the configmap into a stream object
 	streamData := new(stream.Stream)
 	if err := unmarshalStreamDataConfigMap(configMap, streamData); err != nil {
@@ -86,16 +83,32 @@ func reconcileGCP(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 	patchRequired = false
 	newProviderSpec := providerSpec.DeepCopy()
 	for idx, disk := range newProviderSpec.Disks {
-		if newBootImage != disk.Image && disk.Boot {
-			klog.Infof("New target boot image: %s", newBootImage)
-			klog.Infof("Current image: %s", disk.Image)
-			patchRequired = true
-			newProviderSpec.Disks[idx].Image = newBootImage
+		// Do not update non-boot disks
+		if !disk.Boot {
+			continue
 		}
+		// Nothing to update on a match
+		if newBootImage == disk.Image {
+			continue
+		}
+		klog.Infof("New target boot image: %s", newBootImage)
+		klog.Infof("Current image: %s", disk.Image)
+		// If image does not start with "projects/rhcos-cloud/global/images", this is a custom boot image.
+		if !strings.HasPrefix(disk.Image, "projects/rhcos-cloud/global/images") {
+			klog.Infof("current boot image %s is unknown, skipping update of MachineSet %s", disk.Image, machineSet.Name)
+			return false, nil, nil
+		}
+		patchRequired = true
+		newProviderSpec.Disks[idx].Image = newBootImage
 	}
 
 	// If patch is required, marshal the new providerspec into the machineset
 	if patchRequired {
+		// Ensure the ignition stub is the minimum acceptable spec required for boot image updates
+		if err := upgradeStubIgnitionIfRequired(providerSpec.UserDataSecret.Name, secretClient); err != nil {
+			return false, nil, err
+		}
+
 		newMachineSet = machineSet.DeepCopy()
 		if err := marshalProviderSpec(newMachineSet, newProviderSpec); err != nil {
 			return false, nil, err
@@ -114,11 +127,6 @@ func reconcileAWS(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 		return false, nil, err
 	}
 
-	// Ensure the ignition stub is the minimum acceptable spec required for boot image updates
-	if err := upgradeStubIgnitionIfRequired(providerSpec.UserDataSecret.Name, secretClient); err != nil {
-		return false, nil, err
-	}
-
 	// Next, unmarshal the configmap into a stream object
 	streamData := new(stream.Stream)
 	if err := unmarshalStreamDataConfigMap(configMap, streamData); err != nil {
@@ -130,42 +138,50 @@ func reconcileAWS(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 	// Use the GetAwsRegionImage function to find the correct AMI for the region and architecture
 	awsRegionImage, err := streamData.GetAwsRegionImage(arch, region)
 	if err != nil {
-		// On error, attempt to default to us-east-1 region instead
-		// This mirrors the installer approach:
-		// https://github.com/openshift/installer/blob/08aa270e20db77b237306b3f3700d6b2ad654abc/pkg/asset/rhcos/image.go#L99-L103
-		klog.Infof("failed to get AMI for region %s: %v", region, err)
-		if awsRegionImage, err = streamData.GetAwsRegionImage(arch, "us-east-1"); err != nil {
-			return false, nil, fmt.Errorf("failed to get default AMI for region %s: %v", region, err)
-		}
-		klog.Infof("Using AMI for region us-east-1 %s", awsRegionImage.Image)
+		// On a region not found error, log and skip this MachineSet
+		klog.Infof("failed to get AMI for region %s: %v, skipping update of MachineSet %s", region, err, machineSet.Name)
+		return false, nil, nil
 	}
-
 	newami := awsRegionImage.Image
-
-	// Perform rest of bootimage logic here
 
 	patchRequired = false
 	newProviderSpec := providerSpec.DeepCopy()
 
-	// AMIs can be defined via filters, which is the case for OKD. In such cases,
-	// ID will be nil for the very first update, and a default value will need to
-	// be populated
-	currentAMI := "undefined AMI ID"
-	if newProviderSpec.AMI.ID != nil {
-		currentAMI = *newProviderSpec.AMI.ID
+	// If the MachineSet does not use an AMI ID, this is unsupported, log and skip the MachineSet
+	// This happens when the installer has copied an AMI at install-time
+	// Related bug: https://issues.redhat.com/browse/OCPBUGS-57506
+	if newProviderSpec.AMI.ID == nil {
+		klog.Infof("current AMI.ID is undefined, skipping update of MachineSet %s", machineSet.Name)
+		return false, nil, nil
 	}
+
+	currentAMI := *newProviderSpec.AMI.ID
 	if newami != currentAMI {
+		// Examine metadata for the current AMI
+		publisherID, _, err := getAMIMetadata(context.TODO(), currentAMI, region, secretClient)
+		if err != nil {
+			klog.Infof("Failed to examine AMI metadata for %s: %v, skipping update of MachineSet %s", currentAMI, err, machineSet.Name)
+			return false, nil, nil
+		}
+
+		if publisherID == AWSMarketPlacePublisherID {
+			klog.Infof("current AMI %s is from the AWS Marketplace, whose boot image updates are currently unsupported, skipping update of MachineSet %s", currentAMI, machineSet.Name)
+			return false, nil, nil
+		}
+
 		klog.Infof("New target boot image: %s: %s", region, newami)
 		klog.Infof("Current image: %s: %s", region, currentAMI)
 		patchRequired = true
-		// Only one of ID, ARN or Filters in the AMI may be specified, so define
-		// a new AMI object with only an ID field.
 		newProviderSpec.AMI = machinev1beta1.AWSResourceReference{
 			ID: &newami,
 		}
 	}
 
 	if patchRequired {
+		// Ensure the ignition stub is the minimum acceptable spec required for boot image updates
+		if err := upgradeStubIgnitionIfRequired(providerSpec.UserDataSecret.Name, secretClient); err != nil {
+			return false, nil, err
+		}
 		newMachineSet = machineSet.DeepCopy()
 		if err := marshalProviderSpec(newMachineSet, newProviderSpec); err != nil {
 			return false, nil, err
