@@ -20,6 +20,8 @@ func checkMachineSet(infra *osconfigv1.Infrastructure, machineSet *machinev1beta
 	switch infra.Status.PlatformStatus.Type {
 	case osconfigv1.AWSPlatformType:
 		return reconcileAWS(machineSet, configMap, arch, secretClient)
+	case osconfigv1.AzurePlatformType:
+		return reconcileAzure(machineSet, configMap, arch, secretClient)
 	case osconfigv1.GCPPlatformType:
 		return reconcileGCP(machineSet, configMap, arch, secretClient)
 	case osconfigv1.VSpherePlatformType:
