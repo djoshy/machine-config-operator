@@ -26,6 +26,8 @@ import (
 	osconfigv1 "github.com/openshift/api/config/v1"
 	machinev1beta1 "github.com/openshift/api/machine/v1beta1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 
@@ -39,6 +41,82 @@ type VsphereResources struct {
 	networkRef   object.NetworkReference
 	datastore    *object.Datastore
 	existingVM   *object.VirtualMachine
+}
+
+func reconcileVSphere(machineSet *machinev1beta1.MachineSet, infra *osconfigv1.Infrastructure, configMap *corev1.ConfigMap, arch string, secretClient clientset.Interface) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
+	klog.Infof("Reconciling MAPI machineset %s on vSphere, with arch %s", machineSet.Name, arch)
+
+	// First, unmarshal the VSphere providerSpec
+	providerSpec := new(machinev1beta1.VSphereMachineProviderSpec)
+	if err := unmarshalProviderSpec(machineSet, providerSpec); err != nil {
+		return false, nil, err
+	}
+
+	// Reconcile the VSphere provider spec
+	patchRequired, newProviderSpec, err := reconcileVSphereProviderSpec(configMap, arch, infra, providerSpec, machineSet.Name, secretClient)
+	if err != nil {
+		return false, nil, err
+	}
+
+	// If no patch is required, exit early
+	if !patchRequired {
+		return false, nil, nil
+	}
+
+	// If patch is required, marshal the new providerspec into the machineset
+	newMachineSet = machineSet.DeepCopy()
+	if err := marshalProviderSpec(newMachineSet, newProviderSpec); err != nil {
+		return false, nil, err
+	}
+	return patchRequired, newMachineSet, nil
+}
+
+func reconcileVSphereProviderSpec(configMap *corev1.ConfigMap, arch string, infra *osconfigv1.Infrastructure, providerSpec *machinev1beta1.VSphereMachineProviderSpec, machineSetName string, secretClient clientset.Interface) (bool, *machinev1beta1.VSphereMachineProviderSpec, error) {
+	if infra.Spec.PlatformSpec.VSphere == nil {
+		klog.Warningf("Reconcile skipped: VSphere field is nil in PlatformSpec %v", infra.Spec.PlatformSpec)
+		return false, nil, nil
+	}
+
+	// Unmarshal the configmap into a stream object
+	streamData := new(stream.Stream)
+	if err := unmarshalStreamDataConfigMap(configMap, streamData); err != nil {
+		return false, nil, err
+	}
+
+	streamArch, err := streamData.GetArchitecture(arch)
+	if err != nil {
+		return false, nil, err
+	}
+
+	artifacts := streamArch.Artifacts["vmware"]
+	if artifacts.Release == "" {
+		return false, nil, fmt.Errorf("%s: artifact '%s' not found", streamData.FormatPrefix(arch), "vmware")
+	}
+
+	newProviderSpec := providerSpec.DeepCopy()
+
+	// Fetch the creds configmap
+	credsSc, err := secretClient.CoreV1().Secrets("kube-system").Get(context.TODO(), "vsphere-creds", metav1.GetOptions{})
+	if err != nil {
+		return false, nil, fmt.Errorf("failed to fetch vsphere-creds Secret during machineset sync: %w", err)
+	}
+
+	newBootImg, patchRequired, err := createNewVMTemplate(streamData, providerSpec, infra, credsSc, arch, artifacts.Release)
+	if err != nil {
+		return false, nil, err
+	}
+
+	// If patch is required, marshal the new providerspec into the machineset
+	if patchRequired {
+		// Ensure the ignition stub is the minimum acceptable spec required for boot image updates
+		if err := upgradeStubIgnitionIfRequired(providerSpec.UserDataSecret.Name, secretClient); err != nil {
+			return false, nil, err
+		}
+
+		newProviderSpec.Template = newBootImg
+	}
+
+	return patchRequired, newProviderSpec, nil
 }
 
 // checkOvaSecureBoot returns true if the OVF descriptor indicates that EFI secure boot is enabled.

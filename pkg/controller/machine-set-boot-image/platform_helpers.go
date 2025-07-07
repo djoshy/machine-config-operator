@@ -1,13 +1,11 @@
 package machineset
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
 	"github.com/coreos/stream-metadata-go/stream"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
@@ -22,36 +20,13 @@ func checkMachineSet(infra *osconfigv1.Infrastructure, machineSet *machinev1beta
 	switch infra.Status.PlatformStatus.Type {
 	case osconfigv1.AWSPlatformType:
 		return reconcileAWS(machineSet, configMap, arch, secretClient)
-	case osconfigv1.AzurePlatformType:
-		return reconcileAzure(machineSet, configMap, arch)
-	case osconfigv1.BareMetalPlatformType:
-		return reconcileBareMetal(machineSet, configMap, arch)
-	case osconfigv1.OpenStackPlatformType:
-		return reconcileOpenStack(machineSet, configMap, arch)
-	case osconfigv1.EquinixMetalPlatformType:
-		return reconcileEquinixMetal(machineSet, configMap, arch)
 	case osconfigv1.GCPPlatformType:
 		return reconcileGCP(machineSet, configMap, arch, secretClient)
-	case osconfigv1.KubevirtPlatformType:
-		return reconcileKubevirt(machineSet, configMap, arch)
-	case osconfigv1.IBMCloudPlatformType:
-		return reconcileIBMCCloud(machineSet, configMap, arch)
-	case osconfigv1.LibvirtPlatformType:
-		return reconcileLibvirt(machineSet, configMap, arch)
 	case osconfigv1.VSpherePlatformType:
 		return reconcileVSphere(machineSet, infra, configMap, arch, secretClient)
-	case osconfigv1.NutanixPlatformType:
-		return reconcileNutanix(machineSet, configMap, arch)
-	case osconfigv1.OvirtPlatformType:
-		return reconcileOvirt(machineSet, configMap, arch)
-	case osconfigv1.ExternalPlatformType:
-		return reconcileExternal(machineSet, configMap, arch)
-	case osconfigv1.PowerVSPlatformType:
-		return reconcilePowerVS(machineSet, configMap, arch)
-	case osconfigv1.NonePlatformType:
-		return reconcileNone(machineSet, configMap, arch)
 	default:
-		return unmarshalToFindPlatform(machineSet, configMap, arch)
+		klog.Infof("Skipping machineset %s, unsupported platform %s", machineSet.Name, infra.Status.PlatformStatus.Type)
+		return false, nil, nil
 	}
 }
 
@@ -68,7 +43,29 @@ func reconcileGCP(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 		return false, nil, err
 	}
 
-	// Next, unmarshal the configmap into a stream object
+	// Reconcile the GCP provider spec
+	patchRequired, newProviderSpec, err := reconcileGCPProviderSpec(configMap, arch, providerSpec, machineSet.Name, secretClient)
+	if err != nil {
+		return false, nil, err
+	}
+
+	// If no patch is required, exit early
+	if !patchRequired {
+		return false, nil, nil
+	}
+
+	// If patch is required, marshal the new providerspec into the machineset
+	newMachineSet = machineSet.DeepCopy()
+	if err := marshalProviderSpec(newMachineSet, newProviderSpec); err != nil {
+		return false, nil, err
+	}
+	return patchRequired, newMachineSet, nil
+}
+
+// reconcileGCPProviderSpec reconciles the GCP provider spec by updating boot images
+// Returns whether a patch is required, the updated provider spec, and any error
+func reconcileGCPProviderSpec(configMap *corev1.ConfigMap, arch string, providerSpec *machinev1beta1.GCPMachineProviderSpec, machineSetName string, secretClient clientset.Interface) (bool, *machinev1beta1.GCPMachineProviderSpec, error) {
+	// Unmarshal the configmap into a stream object
 	streamData := new(stream.Stream)
 	if err := unmarshalStreamDataConfigMap(configMap, streamData); err != nil {
 		return false, nil, err
@@ -81,7 +78,7 @@ func reconcileGCP(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 
 	// Grab what the current bootimage is, compare to the newBootImage
 	// There is typically only one element in this Disk array, assume multiple to be safe
-	patchRequired = false
+	patchRequired := false
 	newProviderSpec := providerSpec.DeepCopy()
 	for idx, disk := range newProviderSpec.Disks {
 		// Do not update non-boot disks
@@ -96,26 +93,21 @@ func reconcileGCP(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 		klog.Infof("Current image: %s", disk.Image)
 		// If image does not start with "projects/rhcos-cloud/global/images", this is a custom boot image.
 		if !strings.HasPrefix(disk.Image, "projects/rhcos-cloud/global/images") {
-			klog.Infof("current boot image %s is unknown, skipping update of MachineSet %s", disk.Image, machineSet.Name)
+			klog.Infof("current boot image %s is unknown, skipping update of ControlPlaneMachineSet %s", disk.Image, machineSetName)
 			return false, nil, nil
 		}
 		patchRequired = true
 		newProviderSpec.Disks[idx].Image = newBootImage
 	}
 
-	// If patch is required, marshal the new providerspec into the machineset
 	if patchRequired {
 		// Ensure the ignition stub is the minimum acceptable spec required for boot image updates
 		if err := upgradeStubIgnitionIfRequired(providerSpec.UserDataSecret.Name, secretClient); err != nil {
 			return false, nil, err
 		}
-
-		newMachineSet = machineSet.DeepCopy()
-		if err := marshalProviderSpec(newMachineSet, newProviderSpec); err != nil {
-			return false, nil, err
-		}
 	}
-	return patchRequired, newMachineSet, nil
+
+	return patchRequired, newProviderSpec, nil
 }
 
 func reconcileAWS(machineSet *machinev1beta1.MachineSet, configMap *corev1.ConfigMap, arch string, secretClient clientset.Interface) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
@@ -128,7 +120,29 @@ func reconcileAWS(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 		return false, nil, err
 	}
 
-	// Next, unmarshal the configmap into a stream object
+	// Reconcile the AWS provider spec
+	patchRequired, newProviderSpec, err := reconcileAWSProviderSpec(configMap, arch, providerSpec, machineSet.Name, secretClient)
+	if err != nil {
+		return false, nil, err
+	}
+
+	// If no patch is required, exit early
+	if !patchRequired {
+		return false, nil, nil
+	}
+
+	// If patch is required, marshal the new providerspec into the machineset
+	newMachineSet = machineSet.DeepCopy()
+	if err := marshalProviderSpec(newMachineSet, newProviderSpec); err != nil {
+		return false, nil, err
+	}
+	return patchRequired, newMachineSet, nil
+}
+
+// reconcileAWSProviderSpec reconciles the AWS provider spec by updating AMIs
+// Returns whether a patch is required, the updated provider spec, and any error
+func reconcileAWSProviderSpec(configMap *corev1.ConfigMap, arch string, providerSpec *machinev1beta1.AWSMachineProviderConfig, machineSetName string, secretClient clientset.Interface) (bool, *machinev1beta1.AWSMachineProviderConfig, error) {
+	// Unmarshal the configmap into a stream object
 	streamData := new(stream.Stream)
 	if err := unmarshalStreamDataConfigMap(configMap, streamData); err != nil {
 		return false, nil, err
@@ -140,22 +154,21 @@ func reconcileAWS(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 	awsRegionImage, err := streamData.GetAwsRegionImage(arch, region)
 	if err != nil {
 		// On a region not found error, log and skip this MachineSet
-		klog.Infof("failed to get AMI for region %s: %v, skipping update of MachineSet %s", region, err, machineSet.Name)
+		klog.Infof("failed to get AMI for region %s: %v, skipping update of MachineSet %s", region, err, machineSetName)
 		return false, nil, nil
 	}
 
 	newami := awsRegionImage.Image
 
 	// Perform rest of bootimage logic here
-
-	patchRequired = false
+	patchRequired := false
 	newProviderSpec := providerSpec.DeepCopy()
 
 	// If the MachineSet does not use an AMI ID, this is unsupported, log and skip the MachineSet
 	// This happens when the installer has copied an AMI at install-time
 	// Related bug: https://issues.redhat.com/browse/OCPBUGS-57506
 	if newProviderSpec.AMI.ID == nil {
-		klog.Infof("current AMI.ID is undefined, skipping update of MachineSet %s", machineSet.Name)
+		klog.Infof("current AMI.ID is undefined, skipping update of MachineSet %s", machineSetName)
 		return false, nil, nil
 	}
 
@@ -164,7 +177,7 @@ func reconcileAWS(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 	if newami != currentAMI {
 		// Validate that we're allowed to update from the current AMI
 		if !AllowedAMIs.Has(currentAMI) {
-			klog.Infof("current AMI %s is unknown, skipping update of MachineSet %s", currentAMI, machineSet.Name)
+			klog.Infof("current AMI %s is unknown, skipping update of MachineSet %s", currentAMI, machineSetName)
 			return false, nil, nil
 		}
 
@@ -183,132 +196,7 @@ func reconcileAWS(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 		if err := upgradeStubIgnitionIfRequired(providerSpec.UserDataSecret.Name, secretClient); err != nil {
 			return false, nil, err
 		}
-
-		newMachineSet = machineSet.DeepCopy()
-		if err := marshalProviderSpec(newMachineSet, newProviderSpec); err != nil {
-			return false, nil, err
-		}
 	}
 
-	return patchRequired, newMachineSet, nil
-}
-
-func reconcileAzure(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Skipping machineset %s, unsupported platform type Azure with %s arch", machineSet.Name, arch)
-	return false, nil, nil
-}
-
-func reconcileBareMetal(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Skipping machineset %s, unsupported platform type BareMetal with %s arch", machineSet.Name, arch)
-	return false, nil, nil
-}
-
-func reconcileOpenStack(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Skipping machineset %s, unsupported platform type OpenStack with %s arch", machineSet.Name, arch)
-	return false, nil, nil
-}
-
-func reconcileEquinixMetal(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Skipping machineset %s, unsupported platform type EquinixMetal with %s arch", machineSet.Name, arch)
-	return false, nil, nil
-}
-
-func reconcileKubevirt(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Skipping machineset %s, unsupported platform type Kubevirt with %s arch", machineSet.Name, arch)
-	return false, nil, nil
-}
-
-func reconcileIBMCCloud(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Skipping machineset %s, unsupported platform type IBMCCloud with %s arch", machineSet.Name, arch)
-	return false, nil, nil
-}
-
-func reconcileLibvirt(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Skipping machineset %s, unsupported platform type Libvirt with %s arch", machineSet.Name, arch)
-	return false, nil, nil
-}
-
-func reconcileVSphere(machineSet *machinev1beta1.MachineSet, infra *osconfigv1.Infrastructure, configMap *corev1.ConfigMap, arch string, secretClient clientset.Interface) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Reconciling MAPI machineset %s on vSphere, with arch %s", machineSet.Name, arch)
-
-	if infra.Spec.PlatformSpec.VSphere == nil {
-		klog.Warningf("Reconcile skipped: VSphere field is nil in PlatformSpec %v", infra.Spec.PlatformSpec)
-		return false, nil, nil
-	}
-
-	// First, unmarshal the VSphere providerSpec
-	providerSpec := new(machinev1beta1.VSphereMachineProviderSpec)
-	if err := unmarshalProviderSpec(machineSet, providerSpec); err != nil {
-		return false, nil, err
-	}
-
-	// Next, unmarshal the configmap into a stream object
-	streamData := new(stream.Stream)
-	if err := unmarshalStreamDataConfigMap(configMap, streamData); err != nil {
-		return false, nil, err
-	}
-
-	streamArch, err := streamData.GetArchitecture(arch)
-	if err != nil {
-		return false, nil, err
-	}
-
-	artifacts := streamArch.Artifacts["vmware"]
-	if artifacts.Release == "" {
-		return false, nil, fmt.Errorf("%s: artifact '%s' not found", streamData.FormatPrefix(arch), "vmware")
-	}
-
-	newProviderSpec := providerSpec.DeepCopy()
-
-	// Fetch the creds configmap
-	credsSc, err := secretClient.CoreV1().Secrets("kube-system").Get(context.TODO(), "vsphere-creds", metav1.GetOptions{})
-	if err != nil {
-		return false, nil, fmt.Errorf("failed to fetch vsphere-creds Secret during machineset sync: %w", err)
-	}
-
-	newBootImg, patchRequired, err := createNewVMTemplate(streamData, providerSpec, infra, credsSc, arch, artifacts.Release)
-	if err != nil {
-		return false, nil, err
-	}
-
-	// If patch is required, marshal the new providerspec into the machineset
-	if patchRequired {
-		// Ensure the ignition stub is the minimum acceptable spec required for boot image updates
-		if err := upgradeStubIgnitionIfRequired(providerSpec.UserDataSecret.Name, secretClient); err != nil {
-			return false, nil, err
-		}
-
-		newProviderSpec.Template = newBootImg
-		newMachineSet = machineSet.DeepCopy()
-		if err := marshalProviderSpec(newMachineSet, newProviderSpec); err != nil {
-			return false, nil, err
-		}
-	}
-
-	return patchRequired, newMachineSet, nil
-}
-
-func reconcileNutanix(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Skipping machineset %s, unsupported platform type Nutanix with %s arch", machineSet.Name, arch)
-	return false, nil, nil
-}
-
-func reconcileOvirt(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Skipping machineset %s, unsupported platform type Ovirt with %s arch", machineSet.Name, arch)
-	return false, nil, nil
-}
-
-func reconcilePowerVS(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Skipping machineset %s, unsupported platform type PowerVS with %s arch", machineSet.Name, arch)
-	return false, nil, nil
-}
-
-func reconcileExternal(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Skipping machineset %s, unsupported platform type External with %s arch", machineSet.Name, arch)
-	return false, nil, nil
-}
-
-func reconcileNone(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
-	klog.Infof("Skipping machineset %s, unsupported platform type None with %s arch", machineSet.Name, arch)
-	return false, nil, nil
+	return patchRequired, newProviderSpec, nil
 }
