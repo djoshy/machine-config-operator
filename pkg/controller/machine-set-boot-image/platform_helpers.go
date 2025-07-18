@@ -45,6 +45,28 @@ func reconcileGCP(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 		return false, nil, err
 	}
 
+	// Reconcile the GCP provider spec
+	patchRequired, newProviderSpec, err := reconcileGCPProviderSpec(configMap, arch, providerSpec, machineSet.Name, secretClient)
+	if err != nil {
+		return false, nil, err
+	}
+
+	// If no patch is required, exit early
+	if !patchRequired {
+		return false, nil, err
+	}
+
+	// If patch is required, marshal the new providerspec into the machineset
+	newMachineSet = machineSet.DeepCopy()
+	if err := marshalProviderSpec(newMachineSet, newProviderSpec); err != nil {
+		return false, nil, err
+	}
+	return patchRequired, newMachineSet, nil
+}
+
+// reconcileGCPProviderSpec reconciles the GCP provider spec by updating boot images
+// Returns whether a patch is required, the updated provider spec, and any error
+func reconcileGCPProviderSpec(configMap *corev1.ConfigMap, arch string, providerSpec *machinev1beta1.GCPMachineProviderSpec, machineSetName string, secretClient clientset.Interface) (bool, *machinev1beta1.GCPMachineProviderSpec, error) {
 	// Next, unmarshal the configmap into a stream object
 	streamData := new(stream.Stream)
 	if err := unmarshalStreamDataConfigMap(configMap, streamData); err != nil {
@@ -58,7 +80,7 @@ func reconcileGCP(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 
 	// Grab what the current bootimage is, compare to the newBootImage
 	// There is typically only one element in this Disk array, assume multiple to be safe
-	patchRequired = false
+	patchRequired := false
 	newProviderSpec := providerSpec.DeepCopy()
 	for idx, disk := range newProviderSpec.Disks {
 		// Do not update non-boot disks
@@ -73,26 +95,21 @@ func reconcileGCP(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 		klog.Infof("Current image: %s", disk.Image)
 		// If image does not start with "projects/rhcos-cloud/global/images", this is a custom boot image.
 		if !strings.HasPrefix(disk.Image, "projects/rhcos-cloud/global/images") {
-			klog.Infof("current boot image %s is unknown, skipping update of MachineSet %s", disk.Image, machineSet.Name)
+			klog.Infof("current boot image %s is unknown, skipping update of ControlPlaneMachineSet %s", disk.Image, machineSetName)
 			return false, nil, nil
 		}
 		patchRequired = true
 		newProviderSpec.Disks[idx].Image = newBootImage
 	}
 
-	// If patch is required, marshal the new providerspec into the machineset
 	if patchRequired {
 		// Ensure the ignition stub is the minimum acceptable spec required for boot image updates
 		if err := upgradeStubIgnitionIfRequired(providerSpec.UserDataSecret.Name, secretClient); err != nil {
 			return false, nil, err
 		}
-
-		newMachineSet = machineSet.DeepCopy()
-		if err := marshalProviderSpec(newMachineSet, newProviderSpec); err != nil {
-			return false, nil, err
-		}
 	}
-	return patchRequired, newMachineSet, nil
+
+	return patchRequired, newProviderSpec, nil
 }
 
 func reconcileAWS(machineSet *machinev1beta1.MachineSet, configMap *corev1.ConfigMap, arch string, secretClient clientset.Interface) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
@@ -105,6 +122,28 @@ func reconcileAWS(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 		return false, nil, err
 	}
 
+	// Reconcile the AWS provider spec
+	patchRequired, newProviderSpec, err := reconcileAWSProviderSpec(configMap, arch, providerSpec, machineSet.Name, secretClient)
+	if err != nil {
+		return false, nil, err
+	}
+
+	// If no patch is required, exit early
+	if !patchRequired {
+		return false, nil, nil
+	}
+
+	// If patch is required, marshal the new providerspec into the machineset
+	newMachineSet = machineSet.DeepCopy()
+	if err := marshalProviderSpec(newMachineSet, newProviderSpec); err != nil {
+		return false, nil, err
+	}
+	return patchRequired, newMachineSet, nil
+}
+
+// reconcileAWSProviderSpec reconciles the AWS provider spec by updating AMIs
+// Returns whether a patch is required, the updated provider spec, and any error
+func reconcileAWSProviderSpec(configMap *corev1.ConfigMap, arch string, providerSpec *machinev1beta1.AWSMachineProviderConfig, machineSetName string, secretClient clientset.Interface) (bool, *machinev1beta1.AWSMachineProviderConfig, error) {
 	// Next, unmarshal the configmap into a stream object
 	streamData := new(stream.Stream)
 	if err := unmarshalStreamDataConfigMap(configMap, streamData); err != nil {
@@ -117,22 +156,21 @@ func reconcileAWS(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 	awsRegionImage, err := streamData.GetAwsRegionImage(arch, region)
 	if err != nil {
 		// On a region not found error, log and skip this MachineSet
-		klog.Infof("failed to get AMI for region %s: %v, skipping update of MachineSet %s", region, err, machineSet.Name)
+		klog.Infof("failed to get AMI for region %s: %v, skipping update of MachineSet %s", region, err, machineSetName)
 		return false, nil, nil
 	}
 
 	newami := awsRegionImage.Image
 
 	// Perform rest of bootimage logic here
-
-	patchRequired = false
+	patchRequired := false
 	newProviderSpec := providerSpec.DeepCopy()
 
 	// If the MachineSet does not use an AMI ID, this is unsupported, log and skip the MachineSet
 	// This happens when the installer has copied an AMI at install-time
 	// Related bug: https://issues.redhat.com/browse/OCPBUGS-57506
 	if newProviderSpec.AMI.ID == nil {
-		klog.Infof("current AMI.ID is undefined, skipping update of MachineSet %s", machineSet.Name)
+		klog.Infof("current AMI.ID is undefined, skipping update of MachineSet %s", machineSetName)
 		return false, nil, nil
 	}
 
@@ -141,7 +179,7 @@ func reconcileAWS(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 	if newami != currentAMI {
 		// Validate that we're allowed to update from the current AMI
 		if !AllowedAMIs.Has(currentAMI) {
-			klog.Infof("current AMI %s is unknown, skipping update of MachineSet %s", currentAMI, machineSet.Name)
+			klog.Infof("current AMI %s is unknown, skipping update of MachineSet %s", currentAMI, machineSetName)
 			return false, nil, nil
 		}
 
@@ -160,14 +198,9 @@ func reconcileAWS(machineSet *machinev1beta1.MachineSet, configMap *corev1.Confi
 		if err := upgradeStubIgnitionIfRequired(providerSpec.UserDataSecret.Name, secretClient); err != nil {
 			return false, nil, err
 		}
-
-		newMachineSet = machineSet.DeepCopy()
-		if err := marshalProviderSpec(newMachineSet, newProviderSpec); err != nil {
-			return false, nil, err
-		}
 	}
 
-	return patchRequired, newMachineSet, nil
+	return patchRequired, newProviderSpec, nil
 }
 
 func reconcileAzure(machineSet *machinev1beta1.MachineSet, _ *corev1.ConfigMap, arch string) (patchRequired bool, newMachineSet *machinev1beta1.MachineSet, err error) {
