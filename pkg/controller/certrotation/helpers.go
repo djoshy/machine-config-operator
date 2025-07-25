@@ -3,7 +3,9 @@ package certrotationcontroller
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 
+	configclientset "github.com/openshift/client-go/config/clientset/versioned"
 	machineclientset "github.com/openshift/client-go/machine/clientset/versioned"
 	ctrlcommon "github.com/openshift/machine-config-operator/pkg/controller/common"
 
@@ -54,4 +56,26 @@ func hasFunctionalMachineAPI(machineClient machineclientset.Interface) bool {
 
 func hasFunctionalClusterAPI() bool {
 	return false
+}
+
+func getHostnames(configClient configclientset.Interface) []string {
+	cfg, err := configClient.ConfigV1().Infrastructures().Get(context.Background(), "cluster", metav1.GetOptions{})
+	if err != nil {
+		klog.Errorf("unable to get cluster infrastructure resource: %w", err)
+		return nil
+	}
+
+	if cfg.Status.APIServerInternalURL == "" {
+		klog.Errorf("no APIServerInternalURL found in cluster infrastructure resource")
+		return nil
+	}
+	apiserverIntURL, err := url.Parse(cfg.Status.APIServerInternalURL)
+	if err != nil {
+		klog.Errorf("failed to parse %s: %v", apiserverIntURL, err)
+		return nil
+	}
+
+	serverIPs := getServerIPsFromInfra(cfg)
+
+	return append([]string{apiserverIntURL.Hostname()}, serverIPs...)
 }

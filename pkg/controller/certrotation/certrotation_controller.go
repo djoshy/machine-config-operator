@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"time"
 
 	"github.com/vincent-petithory/dataurl"
@@ -86,22 +85,6 @@ func New(
 		},
 	}
 
-	// This is required for the machine-config-server-tls secret rotation
-	cfg, err := configClient.ConfigV1().Infrastructures().Get(context.Background(), "cluster", metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("unable to get cluster infrastructure resource: %w", err)
-	}
-
-	serverIPs := getServerIPsFromInfra(cfg)
-
-	if cfg.Status.APIServerInternalURL == "" {
-		return nil, fmt.Errorf("no APIServerInternalURL found in cluster infrastructure resource")
-	}
-	apiserverIntURL, err := url.Parse(cfg.Status.APIServerInternalURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse %s: %w", apiserverIntURL, err)
-	}
-
 	// The cert controller will begin creating "machine-config-server-ca" configmap & secret in the MCO namespace.
 	// The *-user-data secrets will be updated based on these configmap/secrets.
 	// For the *-user-data-managed secrets, the operator will begin to use "machine-config-server-ca" configmap
@@ -145,7 +128,7 @@ func New(
 			Validity: mcsTLSKeyExpiry,
 			Refresh:  mcsTLSKeyRefresh,
 			CertCreator: &certrotation.ServingRotation{
-				Hostnames: func() []string { return append([]string{apiserverIntURL.Hostname()}, serverIPs...) },
+				Hostnames: func() []string { return getHostnames(configClient) },
 			},
 			Informer:      mcoSecretInformer,
 			Lister:        c.mcoSecretLister,
