@@ -2386,7 +2386,7 @@ func (optr *Operator) isDefaultOnBootImageUpdatePlatform() (bool, error) {
 		klog.Errorf("Could not get infra: %v", err)
 		return false, err
 	}
-	defaultOnPlatforms := sets.New(configv1.GCPPlatformType, configv1.AWSPlatformType)
+	defaultOnPlatforms := sets.New(configv1.GCPPlatformType, configv1.AWSPlatformType, configv1.VSpherePlatformType, configv1.AzurePlatformType)
 	return defaultOnPlatforms.Has(infra.Status.PlatformStatus.Type), nil
 }
 
