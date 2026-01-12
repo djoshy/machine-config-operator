@@ -1,0 +1,18 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: skewenforcement-manual-happy
+objects:
+- apiVersion: operator.openshift.io/v1
+  kind: MachineConfiguration
+  metadata:
+    name: cluster
+    namespace: openshift-machine-config-operator
+  spec:
+    logLevel: Normal
+    operatorLogLevel: Normal
+    bootImageSkewEnforcement:
+      mode: Manual
+      manual:
+        mode: RHCOSVersion
+        rhcosVersion: 9.6.20251023-0

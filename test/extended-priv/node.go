@@ -685,7 +685,7 @@ func (n *Node) CopyToLocal(from, to string) error {
 func (n *Node) RemoveFile(filePathToRemove string) error {
 	logger.Infof("Removing file %s from node %s", filePathToRemove, n.GetName())
 	output, err := n.DebugNodeWithChroot("rm", "-f", filePathToRemove)
-	logger.Infof(output)
+	logger.Infof("%s", output)
 
 	return err
 }

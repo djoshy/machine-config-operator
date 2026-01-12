@@ -24,7 +24,7 @@ var _ = g.Describe("[sig-mco][Suite:openshift/machine-config-operator/disruptive
 		AllMachineSetFixture     = filepath.Join("machineconfigurations", "managedbootimages-all.yaml")
 		NoneMachineSetFixture    = filepath.Join("machineconfigurations", "managedbootimages-none.yaml")
 		PartialMachineSetFixture = filepath.Join("machineconfigurations", "managedbootimages-partial.yaml")
-		EmptyMachineSetFixture   = filepath.Join("machineconfigurations", "managedbootimages-empty.yaml")
+		EmptyMachineSetFixture   = filepath.Join("machineconfigurations", "machineconfigurations-empty.yaml")
 
 		oc = exutil.NewCLI("mco-bootimage", exutil.KubeConfigPath()).AsAdmin()
 	)

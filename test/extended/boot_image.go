@@ -33,13 +33,24 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// SkipUnlessTargetPlatform skips the test if it is not running on the target platform
-func skipUnlessTargetPlatform(oc *exutil.CLI, platformType osconfigv1.PlatformType) {
+// SkipUnlessTargetPlatform skips the test if it is not running on any of the target platforms
+func skipUnlessTargetPlatform(oc *exutil.CLI, platformTypes ...osconfigv1.PlatformType) {
 	infra, err := oc.AdminConfigClient().ConfigV1().Infrastructures().Get(context.Background(), "cluster", metav1.GetOptions{})
 	o.Expect(err).NotTo(o.HaveOccurred())
-	if infra.Status.PlatformStatus.Type != platformType {
-		e2eskipper.Skipf("This test only applies to %s platform", platformType)
+
+	// Check if current platform matches any of the provided platform types
+	platformMatched := false
+	for _, platformType := range platformTypes {
+		if infra.Status.PlatformStatus.Type == platformType {
+			platformMatched = true
+			break
+		}
 	}
+
+	if !platformMatched {
+		e2eskipper.Skipf("This test only applies to %v platforms", platformTypes)
+	}
+
 	// If not Azure, we can return immediately
 	if infra.Status.PlatformStatus.Type != osconfigv1.AzurePlatformType {
 		return

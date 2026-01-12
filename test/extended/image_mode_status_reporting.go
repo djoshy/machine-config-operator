@@ -22,7 +22,7 @@ var (
 		"90-master-testfile": filepath.Join("machineconfigs", "master-testfile-mc.yaml"),
 	}
 	nodeDisruptionFixture      = filepath.Join("machineconfigurations", "nodedisruptionpolicy-rebootless-path.yaml")
-	nodeDisruptionEmptyFixture = filepath.Join("machineconfigurations", "managedbootimages-empty.yaml")
+	nodeDisruptionEmptyFixture = filepath.Join("machineconfigurations", "machineconfigurations-empty.yaml")
 )
 
 // These tests verify ImageModeStatusReporting feature gate functionality.
