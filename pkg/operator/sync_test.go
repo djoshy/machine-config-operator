@@ -374,24 +374,24 @@ func TestSyncMachineConfiguration(t *testing.T) {
 			},
 		},
 		{
-			name:               "Azure platform, no existing config, no opt-in expected",
+			name:               "Azure platform, no existing config, opt-in expected",
 			infra:              buildInfra(withPlatformType(configv1.AzurePlatformType)),
 			mcop:               buildMachineConfigurationWithNoBootImageConfiguration(),
-			annotationExpected: false,
+			annotationExpected: true,
 			expectedManagedBootImagesStatus: opv1.ManagedBootImages{
 				MachineManagers: []opv1.MachineManager{
-					{Resource: opv1.MachineSets, APIGroup: opv1.MachineAPI, Selection: opv1.MachineManagerSelector{Mode: opv1.None}},
+					{Resource: opv1.MachineSets, APIGroup: opv1.MachineAPI, Selection: opv1.MachineManagerSelector{Mode: opv1.All}},
 				},
 			},
 		},
 		{
-			name:               "vsphere platform, no existing config, no opt-in expected",
+			name:               "vsphere platform, no existing config, opt-in expected",
 			infra:              buildInfra(withPlatformType(configv1.VSpherePlatformType)),
 			mcop:               buildMachineConfigurationWithNoBootImageConfiguration(),
-			annotationExpected: false,
+			annotationExpected: true,
 			expectedManagedBootImagesStatus: opv1.ManagedBootImages{
 				MachineManagers: []opv1.MachineManager{
-					{Resource: opv1.MachineSets, APIGroup: opv1.MachineAPI, Selection: opv1.MachineManagerSelector{Mode: opv1.None}},
+					{Resource: opv1.MachineSets, APIGroup: opv1.MachineAPI, Selection: opv1.MachineManagerSelector{Mode: opv1.All}},
 				},
 			},
 		},
@@ -442,11 +442,11 @@ func TestSyncMachineConfiguration(t *testing.T) {
 			name:                  "Azure platform, no existing config, default CPMS disabled",
 			infra:                 buildInfra(withPlatformType(configv1.AzurePlatformType)),
 			mcop:                  buildMachineConfigurationWithNoBootImageConfiguration(),
-			annotationExpected:    false,
+			annotationExpected:    true,
 			enableCPMSFeatureGate: true,
 			expectedManagedBootImagesStatus: opv1.ManagedBootImages{
 				MachineManagers: []opv1.MachineManager{
-					{Resource: opv1.MachineSets, APIGroup: opv1.MachineAPI, Selection: opv1.MachineManagerSelector{Mode: opv1.None}},
+					{Resource: opv1.MachineSets, APIGroup: opv1.MachineAPI, Selection: opv1.MachineManagerSelector{Mode: opv1.All}},
 					{Resource: opv1.ControlPlaneMachineSets, APIGroup: opv1.MachineAPI, Selection: opv1.MachineManagerSelector{Mode: opv1.None}},
 				},
 			},
@@ -465,14 +465,14 @@ func TestSyncMachineConfiguration(t *testing.T) {
 			},
 		},
 		{
-			name:                  "Azure platform, CPMS enabled in spec, MachineSets should still follow platform default (None)",
+			name:                  "Azure platform, CPMS enabled in spec, MachineSets should still follow platform default (All)",
 			infra:                 buildInfra(withPlatformType(configv1.AzurePlatformType)),
 			mcop:                  buildMachineConfigurationWithCPMSEnabled(),
-			annotationExpected:    false,
+			annotationExpected:    true,
 			enableCPMSFeatureGate: true,
 			expectedManagedBootImagesStatus: opv1.ManagedBootImages{
 				MachineManagers: []opv1.MachineManager{
-					{Resource: opv1.MachineSets, APIGroup: opv1.MachineAPI, Selection: opv1.MachineManagerSelector{Mode: opv1.None}},
+					{Resource: opv1.MachineSets, APIGroup: opv1.MachineAPI, Selection: opv1.MachineManagerSelector{Mode: opv1.All}},
 					{Resource: opv1.ControlPlaneMachineSets, APIGroup: opv1.MachineAPI, Selection: opv1.MachineManagerSelector{Mode: opv1.All}},
 				},
 			},
@@ -537,11 +537,11 @@ func TestSyncMachineConfiguration(t *testing.T) {
 			name:                  "vsphere platform, CPMS updates unsupported, MachineSet configuration expected, no CPMS configuration expected",
 			infra:                 buildInfra(withPlatformType(configv1.VSpherePlatformType)),
 			mcop:                  buildMachineConfigurationWithNoBootImageConfiguration(),
-			annotationExpected:    false,
+			annotationExpected:    true,
 			enableCPMSFeatureGate: true,
 			expectedManagedBootImagesStatus: opv1.ManagedBootImages{
 				MachineManagers: []opv1.MachineManager{
-					{Resource: opv1.MachineSets, APIGroup: opv1.MachineAPI, Selection: opv1.MachineManagerSelector{Mode: opv1.None}},
+					{Resource: opv1.MachineSets, APIGroup: opv1.MachineAPI, Selection: opv1.MachineManagerSelector{Mode: opv1.All}},
 				},
 			},
 		},
