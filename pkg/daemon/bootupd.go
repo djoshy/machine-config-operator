@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/uuid"
+
+	ctrlcommon "github.com/openshift/machine-config-operator/pkg/controller/common"
 )
 
 // runGetOut executes a command on the host and returns its stdout output.
@@ -48,7 +50,7 @@ func (dn *Daemon) runBootupdViaContainer(imageURL string) error {
 	}
 	// For now, only attempt bootloader updates on x86_64 and aarch64 as they are the ones
 	// affected by the secure boot issue.
-	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
+	if runtime.GOARCH != ctrlcommon.GoArchAMD64 && runtime.GOARCH != ctrlcommon.GoArchARM64 {
 		return nil
 	}
 	logSystem("runBootupdViaContainer: attempting bootloader update")
@@ -352,9 +354,9 @@ func shimIsSafe() bool {
 
 	var pkgName string
 	switch runtime.GOARCH {
-	case "amd64":
+	case ctrlcommon.GoArchAMD64:
 		pkgName = "shim-x64"
-	case "arm64":
+	case ctrlcommon.GoArchARM64:
 		pkgName = "shim-aa64"
 	default:
 		return true
