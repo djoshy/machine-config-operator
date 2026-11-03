@@ -276,6 +276,45 @@ func TestIgnitionConverterConvert(t *testing.T) {
 	}
 }
 
+// TestIgnitionConverterSpecialModeBitsDownconversion verifies that translating a 3.6.0
+// Ignition config containing a file with special mode bits (setuid 04755) to 3.5.0 fails
+// with an explicit error. The converter must never silently strip the bits, because the
+// resulting file on disk would have different permissions than the user requested.
+func TestIgnitionConverterSpecialModeBitsDownconversion(t *testing.T) {
+	setuidMode := 02541 // 0o4755 in Go octal literal; setuid + rwxr-xr-x
+	cfg := ign3types.Config{
+		Ignition: ign3types.Ignition{Version: ign3types.MaxVersion.String()},
+		Storage: ign3types.Storage{
+			Files: []ign3types.File{
+				{
+					Node: ign3types.Node{Path: "/etc/special-mode-test"},
+					FileEmbedded1: ign3types.FileEmbedded1{
+						Mode: &setuidMode,
+					},
+				},
+			},
+		},
+	}
+
+	converter := newIgnitionConverter(buildConverterList())
+
+	// 3.6 → 3.5: must fail because v3.5 does not support special mode bits.
+	// The converter in vendor/github.com/coreos/ign-converter/translate/v36tov35/v36tov35.go
+	// explicitly returns an error when bit mask (mode & 07000) != 0.
+	_, err := converter.Convert(cfg, *semver.New("3.6.0"), *semver.New("3.5.0"))
+	require.Error(t, err, "downconversion of a 3.6 config with setuid bit must fail")
+	assert.Contains(t, err.Error(), "special mode bits",
+		"error message must mention special mode bits so the caller understands why the downconversion failed")
+
+	// 3.6 → 3.4: same constraint applies to all pre-3.6 versions.
+	_, err = converter.Convert(cfg, *semver.New("3.6.0"), *semver.New("3.4.0"))
+	require.Error(t, err, "downconversion of a 3.6 config with setuid bit to 3.4 must fail")
+
+	// 3.6 → 3.6: identity conversion must succeed.
+	_, err = converter.Convert(cfg, *semver.New("3.6.0"), *semver.New("3.6.0"))
+	require.NoError(t, err, "identity conversion of a 3.6 config with special bits must succeed")
+}
+
 func TestParseAndConvert(t *testing.T) {
 	// Make a new Ign3.2 config
 	testIgn3Config := ign3types.Config{}

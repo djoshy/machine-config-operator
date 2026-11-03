@@ -365,6 +365,132 @@ nulla pariatur.`
 		logger.Infof("OK!\n")
 	})
 
+	// TODO-POLARION: replace with real Polarion ID once assigned
+	g.It("[TODO-POLARION][OTP] Ignition 3.6 special mode bits are applied to files on nodes [Disruptive]", func() {
+		// This test verifies that files delivered via a 3.6.0 MachineConfig with setuid (04755)
+		// and setgid (02755) mode bits are written to worker nodes with those bits intact.
+		//
+		// Two open issues must be fixed in the PR before this test passes:
+		//
+		//   1. pkg/controller/common/helpers.go validateIgn3FileModes rejects any mode > os.ModePerm
+		//      (0777) unconditionally. It must allow special bits (setuid 04000, setgid 02000,
+		//      sticky 01000) when the ignition version is 3.6.0.
+		//
+		//   2. pkg/daemon/file_writers.go writeFiles casts the raw ignition mode integer to
+		//      os.FileMode via os.FileMode(*file.Mode). Go's os.FileMode places ModeSetuid at bit
+		//      23, not at bit 11 where the POSIX integer stores it. os.File.Chmod internally calls
+		//      syscallMode which only transfers ModeSetuid/ModeSetgid/ModeSticky from the Go bits,
+		//      so the special bits are silently lost. The cast must be replaced with an explicit
+		//      conversion that maps POSIX bit positions to os.ModeSetuid / os.ModeSetgid /
+		//      os.ModeSticky.
+		//
+		// storage.directories is intentionally excluded. MCO's reconcile loop rejects any MC that
+		// contains changed ignition directories (pkg/controller/common/reconcile.go), so sticky-bit
+		// directory tests are out of scope until that restriction is lifted.
+		var (
+			wMcp = NewMachineConfigPool(oc.AsAdmin(), MachineConfigPoolWorker)
+			mc   = NewMachineConfig(oc.AsAdmin(), "mc-tc-special-mode-bits", MachineConfigPoolWorker)
+
+			// 0o4755 decimal = 2541 (setuid + rwxr-xr-x)
+			setuidMode = PtrInt(2541)
+			setuidPath = "/etc/mc-special-mode-setuid.test"
+
+			// 0o2755 decimal = 1517 (setgid + rwxr-xr-x)
+			setgidMode = PtrInt(1517)
+			setgidPath = "/etc/mc-special-mode-setgid.test"
+		)
+		defer wMcp.waitForComplete()
+		defer mc.Delete()
+
+		exutil.By("Create 3.6.0 MC with setuid and setgid files")
+		setuidFile := ign32File{
+			Path:     setuidPath,
+			Contents: ign32Contents{Source: GetBase64EncodedFileSourceContent("setuid test")},
+			Mode:     setuidMode,
+		}
+		setgidFile := ign32File{
+			Path:     setgidPath,
+			Contents: ign32Contents{Source: GetBase64EncodedFileSourceContent("setgid test")},
+			Mode:     setgidMode,
+		}
+
+		filesJSON := string(MarshalOrFail([]ign32File{setuidFile, setgidFile}))
+		mc.parameters = []string{fmt.Sprintf("FILES=%s", filesJSON), "IGNITION_VERSION=3.6.0"}
+		mc.create()
+		logger.Infof("OK!\n")
+
+		exutil.By("Wait for MCP to be updated")
+		wMcp.waitForComplete()
+		logger.Infof("OK!\n")
+
+		exutil.By("Verify special mode bits on every worker node")
+		for _, node := range wMcp.GetNodesOrFail() {
+			logger.Infof("Checking node %s", node.GetName())
+
+			setuidRF := NewRemoteFile(node, setuidPath)
+			o.Expect(setuidRF.Fetch()).NotTo(o.HaveOccurred(),
+				"Cannot stat %s on node %s", setuidPath, node.GetName())
+			o.Expect(setuidRF.GetOctalPermissions()).To(o.Equal("4755"),
+				"setuid bit not set on %s on node %s", setuidPath, node.GetName())
+
+			setgidRF := NewRemoteFile(node, setgidPath)
+			o.Expect(setgidRF.Fetch()).NotTo(o.HaveOccurred(),
+				"Cannot stat %s on node %s", setgidPath, node.GetName())
+			o.Expect(setgidRF.GetOctalPermissions()).To(o.Equal("2755"),
+				"setgid bit not set on %s on node %s", setgidPath, node.GetName())
+
+			logger.Infof("OK!\n")
+		}
+	})
+
+	// TODO-POLARION: replace with real Polarion ID once assigned
+	g.It("[TODO-POLARION][OTP] Ignition 3.5 MachineConfig strips special mode bits silently [Disruptive]", func() {
+		// A MC at version 3.5.0 with mode 04755 is accepted by MCO and applied to nodes.
+		// The ignition v3.6 upconverter (translate/translate.go:36) masks special bits before
+		// validation: `ret.Mode = util.IntToPtr(*old.Mode & ^07000)`. After masking, mode 04755
+		// becomes 0755, which passes validateIgn3FileModes. The pool updates and the file lands
+		// at mode 0755 — the setuid bit is silently dropped.
+		//
+		// This is intentional behavior: pre-3.6 ignition configs had undefined handling of special
+		// mode bits, so the upconverter strips them to avoid unexpected privilege escalation.
+		// Users who need setuid/setgid files must use a 3.6.0 MachineConfig (once bug 1 is fixed).
+		var (
+			wMcp = NewMachineConfigPool(oc.AsAdmin(), MachineConfigPoolWorker)
+			mc   = NewMachineConfig(oc.AsAdmin(), "mc-tc-special-mode-bits-v35", MachineConfigPoolWorker)
+
+			filePath = "/etc/mc-special-mode-v35.test"
+			// 0o4755 decimal = 2541 (setuid + rwxr-xr-x). After upconverter mask: 0755.
+			setuidFile = ign32File{
+				Path:     filePath,
+				Contents: ign32Contents{Source: GetBase64EncodedFileSourceContent("v35 setuid test")},
+				Mode:     PtrInt(2541),
+			}
+		)
+		defer wMcp.waitForComplete()
+		defer mc.Delete()
+
+		exutil.By("Create 3.5.0 MC with setuid file")
+		filesJSON := string(MarshalOrFail([]ign32File{setuidFile}))
+		mc.parameters = []string{fmt.Sprintf("FILES=%s", filesJSON), "IGNITION_VERSION=3.5.0"}
+		mc.create()
+		logger.Infof("OK!\n")
+
+		exutil.By("Wait for MCP to update — pool must not degrade")
+		wMcp.waitForComplete()
+		logger.Infof("OK!\n")
+
+		exutil.By("Verify special bits were stripped on every worker node")
+		for _, node := range wMcp.GetNodesOrFail() {
+			logger.Infof("Checking node %s", node.GetName())
+			rf := NewRemoteFile(node, filePath)
+			o.Expect(rf.Fetch()).NotTo(o.HaveOccurred(),
+				"Cannot stat %s on node %s", filePath, node.GetName())
+			o.Expect(rf.GetOctalPermissions()).To(o.Equal("0755"),
+				"Expected setuid bit to be stripped on %s on node %s", filePath, node.GetName())
+			logger.Infof("OK!\n")
+		}
+	})
+
 	g.It("[PolarionID:64833][OTP] Do not make an 'orig' copy for config.json file [Serial]", func() {
 		var (
 			mMcp                = NewMachineConfigPool(oc.AsAdmin(), MachineConfigPoolMaster)
